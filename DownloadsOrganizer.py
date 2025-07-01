@@ -9,9 +9,10 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 CONFIG_FILENAME = "organizer_config.json"
-LOG_FILENAME_APP_PREFIX = "Рекомендации_по_очистке_a
+LOG_FILENAME_APP_PREFIX = "Рекомендации_по_очистке_app"
 
 QUARANTINE_DIR_NAME = "_НА ПРОВЕРКУ (потенциальный мусор)"
 
@@ -27,7 +28,7 @@ ARCHIVE_SPECIFIC_ARCHIVES_OLD_SUBDIR = "02_Архивы_программ_ста�
 ARCHIVED_OLD_FOLDERS_SUBDIR = "04_Архив_Старых_Папок"
 
 JUNK_KEYWORDS = ["старая_версия", "old_version", "backup", "резервная_копия", "temp", "tmpfile"]
-JUNK_EXTENSIONS = [".tmp", ".log", ".bak", "._gstmp", ".crdownload"] # .crdownload - незавершенные загрузки Chrome
+JUNK_EXTENSIONS = [".tmp", ".log", ".bak", "._gstmp", ".crdownload"]
 
 FILE_TYPE_CATEGORIES = {
     "01_Изображения": [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".heic", ".avif", ".tiff", ".tif"],
@@ -72,15 +73,14 @@ class DownloadsOrganizerApp:
         self.setup_main_tab()
         self.setup_quarantine_tab()
 
-        self.load_config() # Загружает настройки и обновляет GUI
-        self.refresh_quarantine_list() # Заполняет список файлов в карантине
+        self.load_config()
+        self.refresh_quarantine_list()
 
         self.gui_log("Приложение Органайзер Загрузок запущено.")
         self.gui_log(f"Текущая папка загрузок: {self.get_downloads_path()}")
         self.gui_log(f"Папка карантина: {self.get_downloads_path() / QUARANTINE_DIR_NAME}")
 
     def get_downloads_path(self):
-        """Возвращает полный путь к папке Загрузок на основе настроек."""
         return Path.home() / self.settings.get("downloads_dir_name", "Downloads")
 
     def setup_main_tab(self):
@@ -155,7 +155,7 @@ class DownloadsOrganizerApp:
         self.quarantine_tree.column("filename", width=300)
         self.quarantine_tree.column("reason", width=200)
         self.quarantine_tree.column("date", width=150)
-
+        
         self.quarantine_tree["displaycolumns"] = ("filename", "reason", "date")
 
         self.quarantine_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -180,7 +180,6 @@ class DownloadsOrganizerApp:
         self.q_refresh_button.pack(side=tk.LEFT, padx=5, expand=True)
 
     def get_junk_reason(self, file_path):
-        """Определяет причину, по которой файл мог бы считаться мусором."""
         filename = file_path.name
         file_ext_lower = file_path.suffix.lower()
 
@@ -192,16 +191,20 @@ class DownloadsOrganizerApp:
             return f"Ключевое слово ('{keyword_found}')"
         
         if is_windows_duplicate_name_logic(filename):
-            base_name = re.match(r"(.+)\s\(\d+\)", file_path.stem).group(1) + file_path.suffix
-            if (file_path.parent / base_name).exists():
-                 return "Дубликат Windows"
-            else:
-                 return "Возможный дубликат (оригинал не найден)"
+            try:
+                base_name_match = re.match(r"(.+)\s\(\d+\)", file_path.stem)
+                if base_name_match:
+                    base_name = base_name_match.group(1) + file_path.suffix
+                    if (file_path.parent / base_name).exists():
+                        return "Дубликат Windows"
+                    else:
+                        return "Возможный дубликат (оригинал не найден)"
+            except (AttributeError, IndexError):
+                 return "Дубликат Windows (ошибка разбора имени)"
 
         return "Неизвестно"
         
     def refresh_quarantine_list(self):
-        """Очищает и заново заполняет список файлов в карантине."""
         for item in self.quarantine_tree.get_children():
             self.quarantine_tree.delete(item)
 
@@ -217,13 +220,11 @@ class DownloadsOrganizerApp:
             try:
                 mod_time = datetime.fromtimestamp(item_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S')
                 reason = self.get_junk_reason(item_path)
-                # Сохраняем полный путь в значении item'а
                 self.quarantine_tree.insert("", tk.END, iid=str(item_path), values=(item_path.name, reason, mod_time))
             except FileNotFoundError:
-                continue # Файл мог быть удален
+                continue
 
     def restore_selected_quarantine(self):
-        """Восстанавливает выбранные файлы из карантина в папку Загрузок."""
         selected_items = self.quarantine_tree.selection()
         if not selected_items:
             messagebox.showinfo("Нет выбора", "Выберите файлы для восстановления.")
@@ -239,7 +240,6 @@ class DownloadsOrganizerApp:
         self.gui_log("Восстановление из карантина завершено.", to_file_too=False)
 
     def delete_selected_quarantine(self):
-        """Удаляет выбранные файлы из карантина."""
         selected_items = self.quarantine_tree.selection()
         if not selected_items:
             messagebox.showinfo("Нет выбора", "Выберите файлы для удаления.")
@@ -265,7 +265,6 @@ class DownloadsOrganizerApp:
         self.refresh_quarantine_list()
 
     def open_quarantine_folder(self):
-        """Открывает папку карантина в системном файловом менеджере."""
         q_path = self.get_downloads_path() / QUARANTINE_DIR_NAME
         if not q_path.is_dir():
             messagebox.showerror("Ошибка", "Папка карантина не найдена.")
@@ -274,9 +273,9 @@ class DownloadsOrganizerApp:
         try:
             if sys.platform == "win32":
                 os.startfile(q_path)
-            elif sys.platform == "darwin": # macOS
+            elif sys.platform == "darwin":
                 subprocess.run(["open", q_path])
-            else: # linux
+            else:
                 subprocess.run(["xdg-open", q_path])
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось открыть папку:\n{e}")
@@ -299,13 +298,11 @@ class DownloadsOrganizerApp:
         if folder_name and folder_name not in self.ignore_listbox.get(0, tk.END):
             self.ignore_listbox.insert(tk.END, folder_name)
             self.ignore_entry_var.set("")
-        # ... (сообщения об ошибках)
 
     def remove_from_ignore_list(self):
         selected_indices = self.ignore_listbox.curselection()
         if selected_indices:
             self.ignore_listbox.delete(selected_indices[0])
-        # ... (сообщения об ошибках)
 
     def load_config(self):
         try:
@@ -348,9 +345,11 @@ class DownloadsOrganizerApp:
 
     def _finalize_operation(self, operation_name):
         try:
-            with open(self.file_log_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(self.recommendations_log_entries))
-            self.gui_log(f"Файловый лог сохранен: \"{self.file_log_path}\"", to_file_too=False)
+            log_file_path = self.file_log_path
+            if log_file_path and log_file_path.parent.exists():
+                with open(log_file_path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(self.recommendations_log_entries))
+                self.gui_log(f"Файловый лог сохранен: \"{log_file_path}\"", to_file_too=False)
         except Exception as e:
             self.gui_log(f"Ошибка записи лога: {e}", to_file_too=False)
 
@@ -358,7 +357,7 @@ class DownloadsOrganizerApp:
         messagebox.showinfo(operation_name, f"{operation_name} завершен(а).")
         self.run_button.config(state=tk.NORMAL)
         self.rollback_button.config(state=tk.NORMAL)
-        self.refresh_quarantine_list() # Обновляем список в карантине
+        self.refresh_quarantine_list()
 
     def run_organization_thread(self):
         if not messagebox.askyesno("Подтверждение", "Запустить организацию папки Загрузок?"):
@@ -449,10 +448,26 @@ def move_item_safely_logic(source_path, target_dir_path, log_callback, action_ty
 
 def is_folder_content_old_logic(folder_to_check_path, days, ignored_folder_names_list, log_callback):
     cutoff_time_ts = time.time() - (days * 24 * 60 * 60)
-    return True # Заглушка, реальная логика в вашем файле
+    
+    if folder_to_check_path.name in ignored_folder_names_list:
+        return False
+
+    try:
+        for item in folder_to_check_path.rglob("*"):
+            
+            is_in_ignored_subfolder = any(part in ignored_folder_names_list for part in item.relative_to(folder_to_check_path).parts)
+            if is_in_ignored_subfolder:
+                continue
+            
+            if item.stat().st_mtime >= cutoff_time_ts:
+                log_callback("ИНФО (ПРОВЕРКА СТАРОСТИ)", folder_to_check_path.name, reason=f"Найден свежий элемент: {item.name}")
+                return False
+    except FileNotFoundError:
+        return True
+    
+    return True
 
 def run_organization_logic(current_settings, log_callback_gui):
-    """Основная логика организации с использованием КАРАНТИНА."""
     downloads_path = Path.home() / current_settings["downloads_dir_name"]
     archive_dir_name = current_settings["archive_dir_name"]
     days_older = current_settings["days_older_to_archive"]
@@ -464,12 +479,23 @@ def run_organization_logic(current_settings, log_callback_gui):
 
     archive_base_path = downloads_path / archive_dir_name
     quarantine_path = downloads_path / QUARANTINE_DIR_NAME
-    ensure_dir_exists_logic(quarantine_path, log_callback_gui)
-
+    
     archive_general_old_path = archive_base_path / ARCHIVE_GENERAL_OLD_SUBDIR
+    archive_specific_archives_old_path = archive_base_path / ARCHIVE_SPECIFIC_ARCHIVES_OLD_SUBDIR
+    archive_old_folders_path = archive_base_path / ARCHIVED_OLD_FOLDERS_SUBDIR
+    
+    ensure_dir_exists_logic(quarantine_path, log_callback_gui)
+    ensure_dir_exists_logic(archive_general_old_path, log_callback_gui)
+    ensure_dir_exists_logic(archive_specific_archives_old_path, log_callback_gui)
+    ensure_dir_exists_logic(archive_old_folders_path, log_callback_gui)
 
-    folders_to_skip = folders_to_ignore + [archive_dir_name, QUARANTINE_DIR_NAME] + list(FILE_TYPE_CATEGORIES.keys())
+    category_folder_names = list(FILE_TYPE_CATEGORIES.keys())
+    for cat_name in category_folder_names:
+        ensure_dir_exists_logic(downloads_path / cat_name, log_callback_gui)
 
+    folders_to_skip = folders_to_ignore + [archive_dir_name, QUARANTINE_DIR_NAME] + category_folder_names
+
+    log_callback_gui("ЭТАП 1", "Обработка элементов на верхнем уровне Загрузок")
     for item_path in list(downloads_path.iterdir()):
         if item_path.name in folders_to_skip:
             continue
@@ -482,7 +508,7 @@ def run_organization_logic(current_settings, log_callback_gui):
             if file_ext_lower in JUNK_EXTENSIONS:
                 junk_reason = f"расширение ({file_ext_lower})"
             elif any(k.lower() in filename.lower() for k in JUNK_KEYWORDS):
-                keyword = next(k for k in JUNK_KEYWORDS if k.lower() in filename.lower())
+                keyword = next((k for k in JUNK_KEYWORDS if k.lower() in filename.lower()), "")
                 junk_reason = f"ключевое слово ('{keyword}')"
             elif is_windows_duplicate_name_logic(filename):
                 junk_reason = "похож на дубликат Windows"
@@ -492,7 +518,6 @@ def run_organization_logic(current_settings, log_callback_gui):
                 continue
 
             if is_file_older_than_logic(item_path, days_older):
-                # (Логика архивации старых файлов остается без изменений)
                 dest_path = archive_specific_archives_old_path if file_ext_lower in PROGRAM_ARCHIVE_EXTENSIONS else archive_general_old_path
                 move_item_safely_logic(item_path, dest_path, log_callback_gui, "В АРХИВ (СТАРЫЙ)", f"старше {days_older} дней")
                 continue
@@ -501,12 +526,21 @@ def run_organization_logic(current_settings, log_callback_gui):
             move_item_safely_logic(item_path, downloads_path / category_name, log_callback_gui, "СОРТИРОВКА", f"категория '{category_name}'")
 
         elif item_path.is_dir():
-            pass
+             if is_folder_content_old_logic(item_path, days_older, folders_to_ignore, log_callback_gui):
+                move_item_safely_logic(item_path, archive_old_folders_path, log_callback_gui, "В АРХИВ (СТАРАЯ ПАПКА)", f"все содержимое старше {days_older} дней")
 
     log_callback_gui("ЭТАП 2", "Проверка на старость файлов внутри папок категорий")
+    for category_name in category_folder_names:
+        category_path = downloads_path / category_name
+        if not category_path.is_dir(): continue
+
+        for item_in_category_path in list(category_path.iterdir()):
+            if item_in_category_path.is_file() and is_file_older_than_logic(item_in_category_path, days_older):
+                file_ext_lower = item_in_category_path.suffix.lower()
+                dest_path = archive_specific_archives_old_path if file_ext_lower in PROGRAM_ARCHIVE_EXTENSIONS else archive_general_old_path
+                move_item_safely_logic(item_in_category_path, dest_path, log_callback_gui, "В АРХИВ (ИЗ КАТЕГОРИИ)")
 
 def perform_rollback_logic(current_settings, log_callback_gui):
-    """Логика сброса с учетом КАРАНТИНА и без старой папки мусора."""
     downloads_path = Path.home() / current_settings["downloads_dir_name"]
     archive_base_path = downloads_path / current_settings["archive_dir_name"]
     quarantine_path = downloads_path / QUARANTINE_DIR_NAME
@@ -525,38 +559,27 @@ def perform_rollback_logic(current_settings, log_callback_gui):
 
     if archive_base_path.is_dir():
         log_callback_gui("СБРОС", archive_base_path.name, reason="Обработка папки архива.")
-
-        archived_old_folders_path_obj = archive_base_path / ARCHIVED_OLD_FOLDERS_SUBDIR
-        if archived_old_folders_path_obj.is_dir():
-            for item in list(archived_old_folders_path_obj.iterdir()):
-                move_item_safely_logic(item, downloads_path, log_callback_gui, "ВОЗВРАТ ПАПКИ ИЗ АРХИВА")
-            try:
-                shutil.rmtree(archived_old_folders_path_obj)
-                log_callback_gui("УДАЛЕНИЕ ПАПКИ", archived_old_folders_path_obj.name)
-            except OSError as e:
-                log_callback_gui("ОШИБКА УДАЛЕНИЯ", archived_old_folders_path_obj.name, reason=f"{e}")
-
+        
         archive_subfolders_to_empty = [
             archive_base_path / ARCHIVE_GENERAL_OLD_SUBDIR,
             archive_base_path / ARCHIVE_SPECIFIC_ARCHIVES_OLD_SUBDIR,
+            archive_base_path / ARCHIVED_OLD_FOLDERS_SUBDIR,
         ]
-
+        
         for archive_subfolder_path in archive_subfolders_to_empty:
             if archive_subfolder_path.is_dir():
                 for item in list(archive_subfolder_path.iterdir()):
-                    move_item_safely_logic(item, downloads_path, log_callback_gui, "ВОЗВРАТ ФАЙЛА ИЗ АРХИВА")
+                    move_item_safely_logic(item, downloads_path, log_callback_gui, "ВОЗВРАТ ИЗ АРХИВА")
                 try:
                     archive_subfolder_path.rmdir()
                     log_callback_gui("УДАЛЕНИЕ ПАПКИ", archive_subfolder_path.name)
-                except OSError as e:
-                     log_callback_gui("ОШИБКА УДАЛЕНИЯ", archive_subfolder_path.name, reason=f"{e}")
-        
+                except OSError:
+                    log_callback_gui("ПРЕДУПРЕЖДЕНИЕ", archive_subfolder_path.name, "Не удалось удалить (возможно, не пуста).")
         try:
-            if list(archive_base_path.iterdir()) == []:
-                 archive_base_path.rmdir()
-                 log_callback_gui("УДАЛЕНИЕ ПАПКИ", archive_base_path.name)
+            archive_base_path.rmdir()
+            log_callback_gui("УДАЛЕНИЕ ПАПКИ", archive_base_path.name)
         except OSError:
-            pass
+            log_callback_gui("ПРЕДУПРЕЖДЕНИЕ", archive_base_path.name, "Не удалось удалить (возможно, не пуста).")
 
     category_folder_names = list(FILE_TYPE_CATEGORIES.keys())
     for cat_name in category_folder_names:
@@ -571,11 +594,8 @@ def perform_rollback_logic(current_settings, log_callback_gui):
                 log_callback_gui("ПРЕДУПРЕЖДЕНИЕ", category_path.name, reason="Папка не пуста, не удалена.")
 
     log_callback_gui("СБРОС", "Операция сброса организации завершена.")
-    pass
-
 
 if __name__ == "__main__":
-    import threading
     root = tk.Tk()
     app = DownloadsOrganizerApp(root)
     root.mainloop()
